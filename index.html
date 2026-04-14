@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<title>外干しアドバイザー</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans','Hiragino Kaku Gothic ProN',sans-serif;background:#f5f5f0;color:#1a1a1a;min-height:100vh}
+.container{max-width:480px;margin:0 auto;padding:16px}
+.card{background:#fff;border-radius:16px;padding:16px;margin-bottom:12px;box-shadow:0 1px 4px rgba(0,0,0,.08)}
+h1{font-size:18px;font-weight:600;margin-bottom:4px}
+.sub{font-size:12px;color:#888;margin-bottom:14px}
+.city-btns{display:flex;gap:8px;margin-bottom:12px}
+.city-btn{flex:1;padding:10px;border-radius:10px;border:1.5px solid #ddd;background:#fff;font-size:14px;font-weight:500;cursor:pointer;transition:all .15s;color:#555}
+.city-btn.active{border-color:#3B6D11;background:#EAF3DE;color:#3B6D11}
+.reload-btn{width:100%;padding:11px;border-radius:10px;border:none;background:#3B6D11;color:#fff;font-size:14px;font-weight:600;cursor:pointer;margin-top:4px}
+.reload-btn:active{background:#27500A}
+.status{font-size:13px;color:#888;min-height:20px;margin-top:8px}
+.section-label{font-size:11px;font-weight:600;color:#888;letter-spacing:.06em;margin-bottom:8px;margin-top:4px}
+.tl-wrap{overflow-x:auto;padding-bottom:4px}
+.timeline{display:flex;gap:3px;min-width:max-content}
+.hcol{width:36px;text-align:center}
+.hbar{height:38px;border-radius:5px;margin-bottom:3px}
+.hlabel{font-size:10px;color:#999}
+.legend{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
+.leg{display:flex;align-items:center;gap:4px;font-size:11px;color:#888}
+.ldot{width:10px;height:10px;border-radius:3px;flex-shrink:0}
+.rec{background:#fff;border-radius:12px;border:1px solid #eee;padding:12px 14px;margin-bottom:8px}
+.rec-top{display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap}
+.badge{font-size:11px;font-weight:600;padding:3px 9px;border-radius:6px}
+.b-great{background:#EAF3DE;color:#27500A}
+.b-good{background:#FAEEDA;color:#633806}
+.b-warn{background:#FCEBEB;color:#791F1F}
+.rec-time{font-size:15px;font-weight:600;color:#111}
+.chips{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:7px}
+.chip{font-size:11px;padding:2px 8px;border-radius:6px;border:1px solid}
+.c-ok{background:#EAF3DE;color:#3B6D11;border-color:#C0DD97}
+.c-mid{background:#FAEEDA;color:#854F0B;border-color:#FAC775}
+.c-bad{background:#FCEBEB;color:#A32D2D;border-color:#F7C1C1}
+.details{display:flex;gap:12px;flex-wrap:wrap}
+.di{font-size:12px;color:#888}
+.dv{font-weight:600;color:#222}
+.no-rec{font-size:14px;color:#888;padding:8px 0}
+.note{font-size:11px;color:#aaa;line-height:1.7;margin-top:4px}
+.day-label{font-size:12px;font-weight:600;color:#555;margin-bottom:6px;margin-top:12px}
+.loading{text-align:center;padding:24px;color:#aaa;font-size:14px}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="card">
+    <h1>外干しアドバイザー</h1>
+    <p class="sub">気象＋黄砂・花粉・PM2.5から外干し適性を判定（6〜17時）</p>
+    <div class="city-btns">
+      <button class="city-btn active" id="btn-nakatsu" onclick="selectCity('nakatsu')">大分県 中津市</button>
+      <button class="city-btn" id="btn-oita" onclick="selectCity('oita')">大分県 大分市</button>
+    </div>
+    <button class="reload-btn" onclick="loadData()">今日・明日を確認する</button>
+    <div id="status" class="status"></div>
+  </div>
+  <div id="result"></div>
+</div>
+
+<script>
+const CITIES = {
+  nakatsu: {name:'中津市', lat:33.5988, lon:131.1888},
+  oita:    {name:'大分市', lat:33.2382, lon:131.6126},
+};
+let currentCity = 'nakatsu';
+
+function selectCity(key) {
+  currentCity = key;
+  document.querySelectorAll('.city-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById('btn-' + key).classList.add('active');
+}
+
+const setStatus = t => document.getElementById('status').textContent = t;
+
+const WURL = (lat,lon) =>
+  `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&hourly=temperature_2m,relative_humidity_2m,windspeed_10m,weathercode,precipitation_probability&forecast_days=2&timezone=Asia%2FTokyo`;
+const AQURL = (lat,lon) =>
+  `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lon}&hourly=dust,pm2_5,grass_pollen,birch_pollen,alder_pollen,ragweed_pollen&forecast_days=2&timezone=Asia%2FTokyo`;
+
+function wScore(temp,hum,wind,code,precip) {
+  if (code >= 51 || precip > 40) return 0;
+  let s = 100;
+  if (hum >= 90) s -= 60; else if (hum >= 80) s -= 45; else if (hum >= 70) s -= 30; else if (hum >= 60) s -= 15;
+  if (temp < 5) s -= 30; else if (temp < 10) s -= 20; else if (temp < 15) s -= 10;
+  if (wind < 0.5) s -= 15; else if (wind < 2) s -= 8; else if (wind > 20) s -= 5;
+  if (code >= 3 && code <= 45) s -= 8;
+  return Math.max(0, Math.min(100, s));
+}
+
+function dustL(v) {
+  if (!v) return {lv:0, label:'黄砂：少ない', cls:'c-ok'};
+  if (v > 500) return {lv:3, label:`黄砂：非常に多い(${Math.round(v)}μg)`, cls:'c-bad'};
+  if (v > 200) return {lv:2, label:`黄砂：多い(${Math.round(v)}μg)`, cls:'c-bad'};
+  if (v > 80)  return {lv:1, label:`黄砂：やや多い(${Math.round(v)}μg)`, cls:'c-mid'};
+  return {lv:0, label:'黄砂：少ない', cls:'c-ok'};
+}
+function pollenL(g,b,a,r) {
+  const t = [g,b,a,r].reduce((s,v)=>s+(v||0),0);
+  if (t > 100) return {lv:3, label:`花粉：非常に多い(${Math.round(t)})`, cls:'c-bad'};
+  if (t > 30)  return {lv:2, label:`花粉：多い(${Math.round(t)})`, cls:'c-bad'};
+  if (t > 8)   return {lv:1, label:`花粉：やや多い(${Math.round(t)})`, cls:'c-mid'};
+  return {lv:0, label:'花粉：少ない', cls:'c-ok'};
+}
+function pm25L(v) {
+  if (!v) return {lv:0, label:'PM2.5：良好', cls:'c-ok'};
+  if (v > 35) return {lv:2, label:`PM2.5：高い(${Math.round(v)}μg)`, cls:'c-bad'};
+  if (v > 15) return {lv:1, label:`PM2.5：やや高い(${Math.round(v)}μg)`, cls:'c-mid'};
+  return {lv:0, label:'PM2.5：良好', cls:'c-ok'};
+}
+
+function barColor(s) {
+  if (s >= 70) return '#639922';
+  if (s >= 50) return '#BA7517';
+  if (s >= 25) return '#D85A30';
+  return '#ccc';
+}
+function recLbl(s) {
+  if (s >= 70) return {text:'最適', cls:'b-great'};
+  if (s >= 50) return {text:'良好', cls:'b-good'};
+  return {text:'不向き', cls:'b-warn'};
+}
+function windStr(w) {
+  if (w < 1) return '無風'; if (w < 3) return '微風';
+  if (w < 8) return '弱風'; if (w < 15) return '中風';
+  return '強風';
+}
+
+function buildHours(wd, aq) {
+  const now = new Date();
+  const aqMap = {};
+  aq.hourly.time.forEach((t,i) => {
+    aqMap[t] = {
+      dust: aq.hourly.dust?.[i], pm25: aq.hourly.pm2_5?.[i],
+      grass: aq.hourly.grass_pollen?.[i], birch: aq.hourly.birch_pollen?.[i],
+      alder: aq.hourly.alder_pollen?.[i], ragweed: aq.hourly.ragweed_pollen?.[i],
+    };
+  });
+  const hours = [];
+  wd.hourly.time.forEach((ts,i) => {
+    const t = new Date(ts);
+    const h = t.getHours();
+    if (h < 6 || h >= 18) return;
+    if (t < now - 3600000) return;
+    const a = aqMap[ts] || {};
+    const ws = wScore(wd.hourly.temperature_2m[i], wd.hourly.relative_humidity_2m[i],
+      wd.hourly.windspeed_10m[i], wd.hourly.weathercode[i], wd.hourly.precipitation_probability[i]);
+    const dL = dustL(a.dust), pL = pollenL(a.grass,a.birch,a.alder,a.ragweed), mL = pm25L(a.pm25);
+    const penalty = dL.lv*15 + pL.lv*12 + mL.lv*8;
+    const score = Math.max(0, ws - penalty);
+    hours.push({t, h, score, ws, penalty, dL, pL, mL,
+      temp:wd.hourly.temperature_2m[i], hum:wd.hourly.relative_humidity_2m[i], wind:wd.hourly.windspeed_10m[i]});
+  });
+  return hours;
+}
+
+function renderTimeline(hrs) {
+  if (!hrs.length) return '';
+  return `<div class="tl-wrap"><div class="timeline">${
+    hrs.map(hr => `<div class="hcol">
+      <div class="hbar" style="background:${barColor(hr.score)};opacity:${(0.25+hr.score/120).toFixed(2)}" title="${hr.h}時 ${hr.score}点"></div>
+      <div class="hlabel">${hr.h}</div>
+    </div>`).join('')
+  }</div></div>`;
+}
+
+function renderWindows(hrs, dayLbl) {
+  const wins=[]; let cur=null;
+  for (const hr of hrs) {
+    if (hr.score >= 50) { if (!cur) cur={items:[hr]}; else cur.items.push(hr); }
+    else { if (cur && cur.items.length >= 2) wins.push(cur); cur=null; }
+  }
+  if (cur && cur.items.length >= 2) wins.push(cur);
+  if (!wins.length) return `<div class="no-rec">${dayLbl}：外干しに適した時間帯がありません</div>`;
+  return wins.map(w => {
+    const avg = Math.round(w.items.reduce((a,b)=>a+b.score,0)/w.items.length);
+    const best = w.items.reduce((a,b)=>a.score>b.score?a:b);
+    const rl = recLbl(avg);
+    const endH = w.items[w.items.length-1].h + 1;
+    const chips = [best.dL, best.pL, best.mL].map(x=>`<span class="chip ${x.cls}">${x.label}</span>`).join('');
+    return `<div class="rec">
+      <div class="rec-top">
+        <span class="badge ${rl.cls}">${rl.text}</span>
+        <span class="rec-time">${dayLbl} ${w.items[0].h}時〜${endH}時（${w.items.length}時間）</span>
+      </div>
+      <div class="chips">${chips}</div>
+      <div class="details">
+        <div class="di">スコア <span class="dv">${avg}点</span></div>
+        <div class="di">湿度 <span class="dv">${Math.round(best.hum)}%</span></div>
+        <div class="di">気温 <span class="dv">${best.temp.toFixed(1)}°C</span></div>
+        <div class="di">風 <span class="dv">${windStr(best.wind)}</span></div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function loadData() {
+  const city = CITIES[currentCity];
+  setStatus(`${city.name} のデータを取得中...`);
+  document.getElementById('result').innerHTML = `<div class="loading">読み込み中...</div>`;
+  try {
+    const [wd, aq] = await Promise.all([
+      fetch(WURL(city.lat, city.lon)).then(r=>r.json()),
+      fetch(AQURL(city.lat, city.lon)).then(r=>r.json()),
+    ]);
+    const hours = buildHours(wd, aq);
+    const now = new Date();
+    const today = hours.filter(x => x.t.getDate() === now.getDate());
+    const tmr   = hours.filter(x => x.t.getDate() !== now.getDate());
+
+    const dateStr = now.toLocaleDateString('ja-JP',{month:'long',day:'numeric',weekday:'short'});
+    document.getElementById('result').innerHTML = `
+      <div class="card">
+        <div class="section-label">乾燥スコア — 今日 ${dateStr}</div>
+        ${renderTimeline(today)}
+        <div class="section-label" style="margin-top:12px">乾燥スコア — 明日</div>
+        ${renderTimeline(tmr)}
+        <div class="legend">
+          <div class="leg"><div class="ldot" style="background:#639922"></div>最適(70+)</div>
+          <div class="leg"><div class="ldot" style="background:#BA7517"></div>良好(50+)</div>
+          <div class="leg"><div class="ldot" style="background:#D85A30"></div>やや不向き</div>
+          <div class="leg"><div class="ldot" style="background:#ccc"></div>不向き</div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="section-label">おすすめ時間帯</div>
+        <div class="day-label">今日</div>
+        ${renderWindows(today, '今日')}
+        <div class="day-label">明日</div>
+        ${renderWindows(tmr, '明日')}
+        <p class="note">
+          判定時間帯：6時〜17時。<br>
+          スコア＝気象(100) − 黄砂ペナルティ − 花粉ペナルティ − PM2.5ペナルティ。<br>
+          ※花粉データはCAMSモデルベース（スギ・ヒノキとの一致精度に限界あり）。
+        </p>
+      </div>
+    `;
+    setStatus(`📍 ${city.name}（${now.toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'})} 更新）`);
+  } catch(e) {
+    document.getElementById('result').innerHTML = '';
+    setStatus('取得エラー: ' + e.message);
+  }
+}
+
+loadData();
+</script>
+</body>
+</html>
