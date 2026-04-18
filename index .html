@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<title>外干しアドバイザー</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Hiragino Sans','Hiragino Kaku Gothic ProN',sans-serif;background:#f5f5f0;color:#1a1a1a;min-height:100vh}
+.container{max-width:480px;margin:0 auto;padding:16px}
+.card{background:#fff;border-radius:16px;padding:18px;margin-bottom:12px;box-shadow:0 1px 4px rgba(0,0,0,.08)}
+h1{font-size:18px;font-weight:600;margin-bottom:4px}
+.sub{font-size:12px;color:#888;margin-bottom:14px}
+.reload-btn{width:100%;padding:11px;border-radius:10px;border:none;background:#FF8C42;color:#fff;font-size:14px;font-weight:600;cursor:pointer}
+.reload-btn:active{background:#E67632}
+.status{font-size:13px;color:#888;min-height:20px;margin-top:8px}
+
+.day-card{background:#fff;border-radius:16px;padding:18px 16px;margin-bottom:12px;box-shadow:0 1px 4px rgba(0,0,0,.08)}
+.day-title{font-size:15px;font-weight:700;color:#222;text-align:center}
+.day-date{font-size:11px;color:#999;text-align:center;margin-bottom:8px}
+
+.clock-wrap{display:flex;justify-content:center;margin:4px 0 12px}
+.clock-svg{width:240px;height:240px}
+.clock-hour-label{font-size:13px;font-weight:600;fill:#444}
+
+.clock-legend{display:flex;justify-content:center;flex-wrap:wrap;gap:8px 12px;margin-bottom:14px;padding:8px 4px;background:#fafaf7;border-radius:8px}
+.leg{display:flex;align-items:center;gap:4px;font-size:11px;color:#666}
+.ldot{width:10px;height:10px;border-radius:3px;flex-shrink:0}
+.ldot-empty{background:#fff;border:1px solid #222}
+
+.segment-ok{fill:#FF8C42}
+.segment-good{fill:#F5D04A}
+.segment-mid{fill:#D4D4D4}
+.segment-bad{fill:#6B6B6B}
+.segment-none{fill:transparent;stroke:#222;stroke-width:0.6}
+
+.breakdown{padding-top:12px;border-top:1px solid #f0f0ec}
+.bd-label{font-size:11px;font-weight:600;color:#888;letter-spacing:.05em;margin-bottom:8px}
+.bd-bar{display:flex;height:22px;border-radius:4px;overflow:hidden;background:#f0f0f0}
+.bd-seg{height:100%}
+.bd-legend{display:flex;flex-wrap:wrap;gap:8px 12px;margin-top:10px}
+.bd-leg{display:flex;align-items:center;gap:5px;font-size:11px;color:#666}
+.bd-dot{width:10px;height:10px;border-radius:2px;flex-shrink:0}
+.bd-empty{color:#aaa;font-size:12px;text-align:center;padding:8px}
+
+.note{font-size:11px;color:#aaa;line-height:1.7}
+.loading{text-align:center;padding:24px;color:#aaa;font-size:14px}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="card">
+    <h1>外干しアドバイザー</h1>
+    <p class="sub">大分県 中津市 / 7〜17時を2時間ごとに判定</p>
+    <button class="reload-btn" onclick="loadData()">今日・明日を確認する</button>
+    <div id="status" class="status"></div>
+  </div>
+  <div id="result"></div>
+</div>
+
+<script>
+const CITY = {name:'中津市', lat:33.5988, lon:131.1888};
+
+const setStatus = t => document.getElementById('status').textContent = t;
+
+const WURL = (lat,lon) =>
+  `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&hourly=temperature_2m,relative_humidity_2m,windspeed_10m,weathercode,precipitation_probability&forecast_days=2&timezone=Asia%2FTokyo`;
+const AQURL = (lat,lon) =>
+  `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lon}&hourly=dust,pm2_5,grass_pollen,birch_pollen,alder_pollen,ragweed_pollen&forecast_days=2&timezone=Asia%2FTokyo`;
+
+function wScore(temp,hum,wind,code,precip) {
+  if (code >= 51 || precip > 40) return 0;
+  let s = 100;
+  if (hum >= 90) s -= 60; else if (hum >= 80) s -= 45; else if (hum >= 70) s -= 30; else if (hum >= 60) s -= 15;
+  if (temp < 5) s -= 30; else if (temp < 10) s -= 20; else if (temp < 15) s -= 10;
+  if (wind < 0.5) s -= 15; else if (wind < 2) s -= 8; else if (wind > 20) s -= 5;
+  if (code >= 3 && code <= 45) s -= 8;
+  return Math.max(0, Math.min(100, s));
+}
+
+function dustLv(v){if(!v)return 0;if(v>500)return 3;if(v>200)return 2;if(v>80)return 1;return 0}
+function pollenLv(g,b,a,r){const t=[g,b,a,r].reduce((s,v)=>s+(v||0),0);if(t>100)return 3;if(t>30)return 2;if(t>8)return 1;return 0}
+function pm25Lv(v){if(!v)return 0;if(v>35)return 2;if(v>15)return 1;return 0}
+
+function scoreClass(s) {
+  if (s >= 70) return 'segment-ok';
+  if (s >= 50) return 'segment-good';
+  if (s >= 25) return 'segment-mid';
+  return 'segment-bad';
+}
+
+function buildHours(wd, aq) {
+  const aqMap = {};
+  aq.hourly.time.forEach((t,i) => {
+    aqMap[t] = {
+      dust: aq.hourly.dust?.[i], pm25: aq.hourly.pm2_5?.[i],
+      grass: aq.hourly.grass_pollen?.[i], birch: aq.hourly.birch_pollen?.[i],
+      alder: aq.hourly.alder_pollen?.[i], ragweed: aq.hourly.ragweed_pollen?.[i],
+    };
+  });
+  const hours = [];
+  wd.hourly.time.forEach((ts,i) => {
+    const t = new Date(ts);
+    const h = t.getHours();
+    if (h < 7 || h >= 17) return;
+    const a = aqMap[ts] || {};
+    const ws = wScore(wd.hourly.temperature_2m[i], wd.hourly.relative_humidity_2m[i],
+      wd.hourly.windspeed_10m[i], wd.hourly.weathercode[i], wd.hourly.precipitation_probability[i]);
+    const dLv = dustLv(a.dust), pLv = pollenLv(a.grass,a.birch,a.alder,a.ragweed), mLv = pm25Lv(a.pm25);
+    const pDust = dLv*15, pPollen = pLv*12, pPM = mLv*8;
+    const score = Math.max(0, ws - pDust - pPollen - pPM);
+    hours.push({t, h, score, ws, pDust, pPollen, pPM});
+  });
+  return hours;
+}
+
+function groupByTwoHours(hours) {
+  const slots = [[7,9],[9,11],[11,13],[13,15],[15,17]];
+  return slots.map(([s,e]) => {
+    const slotHours = hours.filter(h => h.h >= s && h.h < e);
+    if (slotHours.length === 0) return {start:s, end:e, score:null};
+    const avg = slotHours.reduce((a,b)=>a+b.score,0) / slotHours.length;
+    return {start:s, end:e, score:Math.round(avg)};
+  });
+}
+
+function polarToCartesian(cx, cy, r, angleDeg) {
+  const angleRad = (angleDeg - 90) * Math.PI / 180;
+  return { x: cx + r * Math.cos(angleRad), y: cy + r * Math.sin(angleRad) };
+}
+
+function describeArc(cx, cy, r, startAngle, endAngle) {
+  const start = polarToCartesian(cx, cy, r, endAngle);
+  const end = polarToCartesian(cx, cy, r, startAngle);
+  const largeArcFlag = endAngle - startAngle <= 180 ? "0" : "1";
+  return `M ${cx} ${cy} L ${start.x} ${start.y} A ${r} ${r} 0 ${largeArcFlag} 0 ${end.x} ${end.y} Z`;
+}
+
+// breakdown計算用の基準時刻（7〜16にクランプ）
+function getReferenceHour() {
+  const now = new Date();
+  const h = now.getHours();
+  if (h < 7) return 7;
+  if (h >= 17) return 16;
+  return h;
+}
+
+function renderClock(groups, isToday) {
+  const cx = 120, cy = 120, r = 90;
+  const hourToAngle = h => (h % 12) * 30;
+  
+  let segments = '';
+  groups.forEach(g => {
+    const startAng = hourToAngle(g.start);
+    let endAng = hourToAngle(g.end);
+    if (endAng <= startAng) endAng += 360;
+    const cls = g.score === null ? 'segment-none' : scoreClass(g.score);
+    segments += `<path d="${describeArc(cx, cy, r, startAng, endAng)}" class="${cls}" />`;
+  });
+  
+  let dividers = '';
+  [7, 9, 11, 13, 15, 17].forEach(h => {
+    const angle = hourToAngle(h);
+    const p = polarToCartesian(cx, cy, r, angle);
+    dividers += `<line x1="${cx}" y1="${cy}" x2="${p.x}" y2="${p.y}" stroke="#fff" stroke-width="1.5"/>`;
+  });
+  
+  let labels = '';
+  [7, 9, 11, 13, 15, 17].forEach(h => {
+    const angle = hourToAngle(h);
+    const p = polarToCartesian(cx, cy, r + 16, angle);
+    labels += `<text x="${p.x}" y="${p.y}" text-anchor="middle" dominant-baseline="central" class="clock-hour-label">${h}</text>`;
+  });
+  
+  // 短針は今日のみ表示
+  let hand = '';
+  if (isToday) {
+    const now = new Date();
+    const hourFloat = now.getHours() + now.getMinutes() / 60;
+    const handAngle = (hourFloat % 12) * 30;
+    const handLen = r * 0.62;
+    const handEnd = polarToCartesian(cx, cy, handLen, handAngle);
+    hand = `
+      <line x1="${cx}" y1="${cy}" x2="${handEnd.x}" y2="${handEnd.y}" stroke="#FF8C42" stroke-width="7" stroke-linecap="round"/>
+      <circle cx="${cx}" cy="${cy}" r="6" fill="#FF8C42"/>
+    `;
+  }
+  
+  return `
+    <svg class="clock-svg" viewBox="0 0 240 240">
+      <circle cx="${cx}" cy="${cy}" r="${r}" fill="#f8f8f5" stroke="#e0e0d8" stroke-width="1"/>
+      ${segments}
+      ${dividers}
+      ${labels}
+      ${hand}
+    </svg>
+  `;
+}
+
+function renderClockLegend() {
+  return `
+    <div class="clock-legend">
+      <div class="leg"><div class="ldot" style="background:#FF8C42"></div>最適</div>
+      <div class="leg"><div class="ldot" style="background:#F5D04A"></div>良好</div>
+      <div class="leg"><div class="ldot" style="background:#D4D4D4"></div>やや不向き</div>
+      <div class="leg"><div class="ldot" style="background:#6B6B6B"></div>不向き</div>
+      <div class="leg"><div class="ldot ldot-empty"></div>データなし</div>
+    </div>
+  `;
+}
+
+// refHourがnullなら全時間帯の平均、数値ならその時刻のデータを使用
+function renderBreakdown(hours, refHour, label) {
+  if (!hours.length) return '<div class="bd-empty">データなし</div>';
+  
+  let ws, pDust, pPollen, pPM;
+  if (refHour === null) {
+    const n = hours.length;
+    ws = hours.reduce((a,b)=>a+b.ws, 0) / n;
+    pDust = hours.reduce((a,b)=>a+b.pDust, 0) / n;
+    pPollen = hours.reduce((a,b)=>a+b.pPollen, 0) / n;
+    pPM = hours.reduce((a,b)=>a+b.pPM, 0) / n;
+  } else {
+    const target = hours.find(x => x.h === refHour) || hours[0];
+    ws = target.ws;
+    pDust = target.pDust;
+    pPollen = target.pPollen;
+    pPM = target.pPM;
+  }
+  
+  const wLoss = 100 - ws;
+  const finalScore = Math.max(0, ws - pDust - pPollen - pPM);
+  
+  return `
+    <div class="breakdown">
+      <div class="bd-label">${label}</div>
+      <div class="bd-bar">
+        <div class="bd-seg" style="width:${finalScore}%;background:#FF8C42"></div>
+        <div class="bd-seg" style="width:${wLoss}%;background:#E0E0DA"></div>
+        <div class="bd-seg" style="width:${pDust}%;background:#C89060"></div>
+        <div class="bd-seg" style="width:${pPollen}%;background:#A8C864"></div>
+        <div class="bd-seg" style="width:${pPM}%;background:#7088A0"></div>
+      </div>
+      <div class="bd-legend">
+        <div class="bd-leg"><div class="bd-dot" style="background:#FF8C42"></div>総合 ${finalScore.toFixed(0)}</div>
+        <div class="bd-leg"><div class="bd-dot" style="background:#E0E0DA"></div>気象 -${wLoss.toFixed(0)}</div>
+        <div class="bd-leg"><div class="bd-dot" style="background:#C89060"></div>黄砂 -${pDust.toFixed(0)}</div>
+        <div class="bd-leg"><div class="bd-dot" style="background:#A8C864"></div>花粉 -${pPollen.toFixed(0)}</div>
+        <div class="bd-leg"><div class="bd-dot" style="background:#7088A0"></div>PM2.5 -${pPM.toFixed(0)}</div>
+      </div>
+    </div>
+  `;
+}
+
+async function loadData() {
+  setStatus(`${CITY.name} のデータを取得中...`);
+  document.getElementById('result').innerHTML = `<div class="loading">読み込み中...</div>`;
+  try {
+    const [wd, aq] = await Promise.all([
+      fetch(WURL(CITY.lat, CITY.lon)).then(r=>r.json()),
+      fetch(AQURL(CITY.lat, CITY.lon)).then(r=>r.json()),
+    ]);
+    const hours = buildHours(wd, aq);
+    const now = new Date();
+    const today = hours.filter(x => x.t.getDate() === now.getDate());
+    const tmr   = hours.filter(x => x.t.getDate() !== now.getDate());
+
+    const todayGroups = groupByTwoHours(today);
+    const tmrGroups = groupByTwoHours(tmr);
+    const refHour = getReferenceHour();
+    const inRange = now.getHours() >= 7 && now.getHours() < 17;
+    const todayLabel = inRange
+      ? `現在 ${now.getHours()}:${String(now.getMinutes()).padStart(2,'0')} のスコア内訳`
+      : `参考：${refHour}時 のスコア内訳（現在は時間外）`;
+    const tmrLabel = `明日 7〜17時 の平均スコア内訳`;
+    
+    const todayStr = now.toLocaleDateString('ja-JP',{month:'long',day:'numeric',weekday:'short'});
+    const tmrDate = new Date(now.getTime() + 86400000);
+    const tmrStr = tmrDate.toLocaleDateString('ja-JP',{month:'long',day:'numeric',weekday:'short'});
+    
+    document.getElementById('result').innerHTML = `
+      <div class="day-card">
+        <div class="day-title">今日</div>
+        <div class="day-date">${todayStr}</div>
+        <div class="clock-wrap">${renderClock(todayGroups, true)}</div>
+        ${renderClockLegend()}
+        ${renderBreakdown(today, refHour, todayLabel)}
+      </div>
+      <div class="day-card">
+        <div class="day-title">明日</div>
+        <div class="day-date">${tmrStr}</div>
+        <div class="clock-wrap">${renderClock(tmrGroups, false)}</div>
+        ${renderClockLegend()}
+        ${renderBreakdown(tmr, null, tmrLabel)}
+      </div>
+      <div class="card">
+        <p class="note">
+          判定時間帯：7時〜17時（2時間ごと）。<br>
+          スコア＝気象(100) − 黄砂 − 花粉 − PM2.5 ペナルティ。<br>
+          ※花粉データはCAMSモデルベース（スギ・ヒノキとの一致精度に限界あり）。
+        </p>
+      </div>
+    `;
+    setStatus(`📍 ${CITY.name}（${now.toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'})} 更新）`);
+  } catch(e) {
+    document.getElementById('result').innerHTML = '';
+    setStatus('取得エラー: ' + e.message);
+  }
+}
+
+loadData();
+</script>
+</body>
+</html>
