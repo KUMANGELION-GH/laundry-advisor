@@ -67,8 +67,9 @@ const setStatus = t => document.getElementById('status').textContent = t;
 
 const WURL = (lat,lon) =>
   `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&hourly=temperature_2m,relative_humidity_2m,windspeed_10m,weathercode,precipitation_probability&forecast_days=2&timezone=Asia%2FTokyo`;
+// dust(サハラ砂塵のみ)は日本の黄砂を捕捉できないため、pm10とpm2_5の差分(粗大粒子)を黄砂指標として使用
 const AQURL = (lat,lon) =>
-  `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lon}&hourly=dust,pm2_5,grass_pollen,birch_pollen,alder_pollen,ragweed_pollen&forecast_days=2&timezone=Asia%2FTokyo`;
+  `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lon}&hourly=pm10,pm2_5,grass_pollen,birch_pollen,alder_pollen,ragweed_pollen&forecast_days=2&timezone=Asia%2FTokyo`;
 
 function wScore(temp,hum,wind,code,precip) {
   if (code >= 51 || precip > 40) return 0;
@@ -80,7 +81,15 @@ function wScore(temp,hum,wind,code,precip) {
   return Math.max(0, Math.min(100, s));
 }
 
-function dustLv(v){if(!v)return 0;if(v>500)return 3;if(v>200)return 2;if(v>80)return 1;return 0}
+// 黄砂レベル: PM10 - PM2.5(粗大粒子)で判定
+// 通常時の粗大粒子: 5〜15μg/m³、黄砂飛来時: 数十〜数百μg/m³
+function dustLv(pm10, pm25) {
+  const coarse = Math.max(0, (pm10 || 0) - (pm25 || 0));
+  if (coarse > 100) return 3;
+  if (coarse > 50)  return 2;
+  if (coarse > 20)  return 1;
+  return 0;
+}
 function pollenLv(g,b,a,r){const t=[g,b,a,r].reduce((s,v)=>s+(v||0),0);if(t>100)return 3;if(t>30)return 2;if(t>8)return 1;return 0}
 function pm25Lv(v){if(!v)return 0;if(v>35)return 2;if(v>15)return 1;return 0}
 
@@ -95,7 +104,7 @@ function buildHours(wd, aq) {
   const aqMap = {};
   aq.hourly.time.forEach((t,i) => {
     aqMap[t] = {
-      dust: aq.hourly.dust?.[i], pm25: aq.hourly.pm2_5?.[i],
+      pm10: aq.hourly.pm10?.[i], pm25: aq.hourly.pm2_5?.[i],
       grass: aq.hourly.grass_pollen?.[i], birch: aq.hourly.birch_pollen?.[i],
       alder: aq.hourly.alder_pollen?.[i], ragweed: aq.hourly.ragweed_pollen?.[i],
     };
@@ -108,17 +117,22 @@ function buildHours(wd, aq) {
     const a = aqMap[ts] || {};
     const ws = wScore(wd.hourly.temperature_2m[i], wd.hourly.relative_humidity_2m[i],
       wd.hourly.windspeed_10m[i], wd.hourly.weathercode[i], wd.hourly.precipitation_probability[i]);
-    const dLv = dustLv(a.dust), pLv = pollenLv(a.grass,a.birch,a.alder,a.ragweed), mLv = pm25Lv(a.pm25);
+    const dLv = dustLv(a.pm10, a.pm25);
+    const pLv = pollenLv(a.grass,a.birch,a.alder,a.ragweed);
+    const mLv = pm25Lv(a.pm25);
     const pDust = dLv*15, pPollen = pLv*12, pPM = mLv*8;
     const score = Math.max(0, ws - pDust - pPollen - pPM);
-    hours.push({t, h, score, ws, pDust, pPollen, pPM});
+    hours.push({t, h, score, ws, pDust, pPollen, pPM, pm10:a.pm10, pm25:a.pm25});
   });
   return hours;
 }
 
-function groupByTwoHours(hours) {
+function groupByTwoHours(hours, isToday) {
   const slots = [[7,9],[9,11],[11,13],[13,15],[15,17]];
+  const currentH = new Date().getHours();
   return slots.map(([s,e]) => {
+    // 今日のカードのみ、終了時刻が過ぎたスロットは「データなし」扱い
+    if (isToday && currentH >= e) return {start:s, end:e, score:null};
     const slotHours = hours.filter(h => h.h >= s && h.h < e);
     if (slotHours.length === 0) return {start:s, end:e, score:null};
     const avg = slotHours.reduce((a,b)=>a+b.score,0) / slotHours.length;
@@ -138,7 +152,6 @@ function describeArc(cx, cy, r, startAngle, endAngle) {
   return `M ${cx} ${cy} L ${start.x} ${start.y} A ${r} ${r} 0 ${largeArcFlag} 0 ${end.x} ${end.y} Z`;
 }
 
-// breakdown計算用の基準時刻（7〜16にクランプ）
 function getReferenceHour() {
   const now = new Date();
   const h = now.getHours();
@@ -147,7 +160,7 @@ function getReferenceHour() {
   return h;
 }
 
-function renderClock(groups, isToday) {
+function renderClock(groups) {
   const cx = 120, cy = 120, r = 90;
   const hourToAngle = h => (h % 12) * 30;
   
@@ -174,27 +187,12 @@ function renderClock(groups, isToday) {
     labels += `<text x="${p.x}" y="${p.y}" text-anchor="middle" dominant-baseline="central" class="clock-hour-label">${h}</text>`;
   });
   
-  // 短針は今日のみ表示
-  let hand = '';
-  if (isToday) {
-    const now = new Date();
-    const hourFloat = now.getHours() + now.getMinutes() / 60;
-    const handAngle = (hourFloat % 12) * 30;
-    const handLen = r * 0.62;
-    const handEnd = polarToCartesian(cx, cy, handLen, handAngle);
-    hand = `
-      <line x1="${cx}" y1="${cy}" x2="${handEnd.x}" y2="${handEnd.y}" stroke="#FF8C42" stroke-width="7" stroke-linecap="round"/>
-      <circle cx="${cx}" cy="${cy}" r="6" fill="#FF8C42"/>
-    `;
-  }
-  
   return `
     <svg class="clock-svg" viewBox="0 0 240 240">
       <circle cx="${cx}" cy="${cy}" r="${r}" fill="#f8f8f5" stroke="#e0e0d8" stroke-width="1"/>
       ${segments}
       ${dividers}
       ${labels}
-      ${hand}
     </svg>
   `;
 }
@@ -211,7 +209,6 @@ function renderClockLegend() {
   `;
 }
 
-// refHourがnullなら全時間帯の平均、数値ならその時刻のデータを使用
 function renderBreakdown(hours, refHour, label) {
   if (!hours.length) return '<div class="bd-empty">データなし</div>';
   
@@ -267,8 +264,8 @@ async function loadData() {
     const today = hours.filter(x => x.t.getDate() === now.getDate());
     const tmr   = hours.filter(x => x.t.getDate() !== now.getDate());
 
-    const todayGroups = groupByTwoHours(today);
-    const tmrGroups = groupByTwoHours(tmr);
+    const todayGroups = groupByTwoHours(today, true);
+    const tmrGroups = groupByTwoHours(tmr, false);
     const refHour = getReferenceHour();
     const inRange = now.getHours() >= 7 && now.getHours() < 17;
     const todayLabel = inRange
@@ -284,14 +281,14 @@ async function loadData() {
       <div class="day-card">
         <div class="day-title">今日</div>
         <div class="day-date">${todayStr}</div>
-        <div class="clock-wrap">${renderClock(todayGroups, true)}</div>
+        <div class="clock-wrap">${renderClock(todayGroups)}</div>
         ${renderClockLegend()}
         ${renderBreakdown(today, refHour, todayLabel)}
       </div>
       <div class="day-card">
         <div class="day-title">明日</div>
         <div class="day-date">${tmrStr}</div>
-        <div class="clock-wrap">${renderClock(tmrGroups, false)}</div>
+        <div class="clock-wrap">${renderClock(tmrGroups)}</div>
         ${renderClockLegend()}
         ${renderBreakdown(tmr, null, tmrLabel)}
       </div>
@@ -299,6 +296,7 @@ async function loadData() {
         <p class="note">
           判定時間帯：7時〜17時（2時間ごと）。<br>
           スコア＝気象(100) − 黄砂 − 花粉 − PM2.5 ペナルティ。<br>
+          ※黄砂指標：PM10とPM2.5の差分（粗大粒子）から推定（CAMS全球モデル）。<br>
           ※花粉データはCAMSモデルベース（スギ・ヒノキとの一致精度に限界あり）。
         </p>
       </div>
