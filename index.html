@@ -82,12 +82,13 @@ function wScore(temp,hum,wind,code,precip) {
 }
 
 // 黄砂レベル: PM10 - PM2.5(粗大粒子)で判定
-// 通常時の粗大粒子: 5〜15μg/m³、黄砂飛来時: 数十〜数百μg/m³
+// 日本の通常時粗大粒子は5〜10μg/m³、黄砂飛来時は数十〜数百μg/m³
+// 敏感設定：軽微な粗大粒子増加も拾う
 function dustLv(pm10, pm25) {
   const coarse = Math.max(0, (pm10 || 0) - (pm25 || 0));
-  if (coarse > 100) return 3;
-  if (coarse > 50)  return 2;
-  if (coarse > 20)  return 1;
+  if (coarse > 50) return 3;
+  if (coarse > 25) return 2;
+  if (coarse > 10) return 1;
   return 0;
 }
 function pollenLv(g,b,a,r){const t=[g,b,a,r].reduce((s,v)=>s+(v||0),0);if(t>100)return 3;if(t>30)return 2;if(t>8)return 1;return 0}
